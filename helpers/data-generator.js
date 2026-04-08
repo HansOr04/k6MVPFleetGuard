@@ -2,23 +2,26 @@
  * data-generator.js
  * Generación dinámica de datos de prueba para los tests k6 de FleetGuard.
  *
- * Garantiza unicidad de placas entre VUs e iteraciones usando:
- * - __VU: ID del Virtual User actual
- * - __ITER: número de iteración actual
- * - Date.now(): timestamp de alta resolución
- * - Sufijo aleatorio para evitar colisiones en ejecuciones paralelas
+ * Payloads validados contra los DTOs reales del proyecto:
+ *   - fleet-service:          RegisterVehicleRequest, RegisterMileageRequest
+ *   - rules-alerts-service:   CreateMaintenanceRuleRequest, AssociateVehicleTypeRequest
+ *
+ * Garantiza unicidad de placas y VINs entre VUs e iteraciones usando:
+ *   - __VU: ID del Virtual User actual
+ *   - __ITER: número de iteración actual
+ *   - Date.now(): timestamp de alta resolución
  */
 
 import { VEHICLE_TYPE_IDS, VEHICLE_TYPES_ARRAY } from '../config/environments.js';
 
 // ──────────────────────────────────────────────
-// Generadores de placas
+// Generadores de placas y VINs únicos
 // ──────────────────────────────────────────────
 
 /**
  * Genera una placa única para el VU e iteración actuales.
- * Formato: FG{VU_ID}-{ITER}-{RANDOM_HEX}
- * Ejemplo: FG12-003-a4f7
+ * Formato corto válido para evitar exceder límites del campo.
+ * Ejemplo: FG001-003-A4F7
  *
  * @returns {string} Placa única
  */
@@ -36,9 +39,38 @@ export function generatePlate() {
  * @returns {string} Placa basada en timestamp
  */
 export function generateUniquePlate() {
-  const ts   = Date.now().toString(36).toUpperCase();
+  const ts   = Date.now().toString(36).toUpperCase().slice(-5);
   const rand = Math.floor(Math.random() * 999).toString().padStart(3, '0');
   return `FG-${ts}-${rand}`;
+}
+
+/**
+ * Genera un VIN de exactamente 17 caracteres (requerido por validación del API).
+ * Formato: K6[VU][ITER][TIMESTAMP][RANDOM] — siempre 17 chars alfanuméricos.
+ *
+ * @returns {string} VIN de 17 caracteres
+ */
+export function generateVin() {
+  // Base determinística por VU e ITER
+  const base = `K6${String(__VU).padStart(2, '0')}${String(__ITER).padStart(3, '0')}`;
+  // Relleno con timestamp y random para garantizar unicidad
+  const fill = Date.now().toString(36).toUpperCase() +
+               Math.random().toString(36).toUpperCase().slice(2);
+  // Truncar/pad a exactamente 17 chars
+  const raw = (base + fill).replaceAll(/[^A-Z0-9]/gi, 'X').toUpperCase();
+  return raw.slice(0, 17).padEnd(17, 'X');
+}
+
+/**
+ * Genera un nombre único para una regla de mantenimiento.
+ * Incluye un sufijo aleatorio para evitar conflictos entre ejecuciones.
+ *
+ * @param {string} [prefix='Rule'] - Prefijo identificador del contexto (ej: 'Smoke', 'AsyncRule')
+ * @returns {string} Nombre único de regla
+ */
+export function generateRuleName(prefix = 'Rule') {
+  const rand = Math.floor(Math.random() * 0xffff).toString(16).toUpperCase().padStart(4, '0');
+  return `${prefix}-VU${__VU}-IT${__ITER}-${rand}`;
 }
 
 // ──────────────────────────────────────────────
@@ -56,7 +88,6 @@ export function randomVehicleTypeId() {
 
 /**
  * Retorna el tipo Sedán (determinístico).
- * Usado cuando se necesita consistencia en los datos.
  * @returns {string} UUID del tipo Sedán
  */
 export function sedanTypeId() {
@@ -64,59 +95,90 @@ export function sedanTypeId() {
 }
 
 // ──────────────────────────────────────────────
-// Constructores de payloads
+// Constructores de payloads — fleet-service
 // ──────────────────────────────────────────────
 
 /**
  * Payload para registrar un nuevo vehículo.
+ * Validado contra: RegisterVehicleRequest.java
+ *
+ * Campos requeridos:
+ *   - plate       @NotBlank
+ *   - brand       @NotBlank
+ *   - model       @NotBlank
+ *   - year        @NotNull
+ *   - fuelType    @NotBlank
+ *   - vin         @NotBlank @Size(min=17, max=17)
+ *   - vehicleTypeId @NotNull UUID
  *
  * @param {string} plate - Placa generada
- * @param {string} [vehicleTypeId] - UUID del tipo (default: aleatorio)
+ * @param {string} [vehicleTypeId] - UUID del tipo (default: Sedán)
  * @returns {Object} Payload JSON para POST /api/vehicles
  */
 export function buildVehiclePayload(plate, vehicleTypeId = null) {
   return {
     plate:         plate,
-    vehicleTypeId: vehicleTypeId || randomVehicleTypeId(),
     brand:         'Toyota',
     model:         'Corolla',
     year:          2022,
-    initialMileage: 0,
+    fuelType:      'GASOLINE',
+    vin:           generateVin(),
+    vehicleTypeId: vehicleTypeId || sedanTypeId(),
   };
 }
 
 /**
  * Payload para registrar kilometraje.
- * Por defecto usa 5000 km para superar cualquier regla de mantenimiento.
+ * Validado contra: RegisterMileageRequest.java
  *
- * @param {number} [mileage=5000] - Kilometraje a registrar
+ * Campos requeridos:
+ *   - mileageValue  @NotNull Long
+ *   - recordedBy    @NotBlank String
+ *
+ * @param {number} [mileageValue=5000] - Kilometraje a registrar (debe superar intervalKm de la regla)
  * @returns {Object} Payload JSON para POST /api/vehicles/{plate}/mileage
  */
-export function buildMileagePayload(mileage = 5000) {
+export function buildMileagePayload(mileageValue = 5000) {
   return {
-    mileage: mileage,
+    mileageValue: mileageValue,
+    recordedBy:   `k6-vu${__VU}`,
   };
 }
 
+// ──────────────────────────────────────────────
+// Constructores de payloads — rules-alerts-service
+// ──────────────────────────────────────────────
+
 /**
  * Payload para crear una regla de mantenimiento.
- * Por defecto crea una regla a 1000 km para facilitar el disparo de alertas.
+ * Validado contra: CreateMaintenanceRuleRequest.java
+ *
+ * Campos requeridos:
+ *   - name              @NotBlank
+ *   - maintenanceType   @NotBlank
+ *   - intervalKm        @NotNull @Min(1)
+ * Campos opcionales:
+ *   - warningThresholdKm @Min(1)
  *
  * @param {string} name - Nombre de la regla
- * @param {number} [mileageThreshold=1000] - Umbral en km
+ * @param {number} [intervalKm=1000] - Intervalo en km (umbral para disparar alerta)
  * @returns {Object} Payload JSON para POST /api/maintenance-rules
  */
-export function buildMaintenanceRulePayload(name, mileageThreshold = 1000) {
+export function buildMaintenanceRulePayload(name, intervalKm = 1000) {
   return {
-    name:             name || `Regla-VU${__VU}-${Date.now()}`,
-    description:      'Regla generada por k6 performance test',
-    mileageThreshold: mileageThreshold,
-    alertMessage:     'Mantenimiento requerido',
+    name:                name || `Regla-VU${__VU}-IT${__ITER}`,
+    maintenanceType:     'OIL_CHANGE',
+    intervalKm:          intervalKm,
+    warningThresholdKm:  Math.floor(intervalKm * 0.1),  // 10% antes del límite
   };
 }
 
 /**
  * Payload para asociar una regla a un tipo de vehículo.
+ * Validado contra: AssociateVehicleTypeRequest.java
+ *
+ * Campos requeridos:
+ *   - vehicleTypeId @NotNull UUID
  *
  * @param {string} vehicleTypeId - UUID del tipo de vehículo
  * @returns {Object} Payload JSON para POST /api/maintenance-rules/{id}/vehicle-types
@@ -124,20 +186,5 @@ export function buildMaintenanceRulePayload(name, mileageThreshold = 1000) {
 export function buildVehicleTypeAssociationPayload(vehicleTypeId) {
   return {
     vehicleTypeId: vehicleTypeId,
-  };
-}
-
-/**
- * Payload para registrar un mantenimiento completado.
- *
- * @param {string} plate - Placa del vehículo
- * @returns {Object} Payload JSON para POST /api/maintenance/{plate}
- */
-export function buildMaintenancePayload(plate) {
-  return {
-    plate:       plate,
-    description: 'Mantenimiento completado — k6 test',
-    mileage:     1000,
-    date:        new Date().toISOString().split('T')[0],
   };
 }

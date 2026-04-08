@@ -47,6 +47,7 @@ import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.2/index.js';
 import { FLEET_ENDPOINTS, RULES_ENDPOINTS, TIMEOUTS, VEHICLE_TYPE_IDS } from '../config/environments.js';
 import {
   generateUniquePlate,
+  generateRuleName,
   buildVehiclePayload,
   buildMileagePayload,
   buildMaintenanceRulePayload,
@@ -115,10 +116,10 @@ const JSON_HEADERS = {
 // ──────────────────────────────────────────────
 // Función principal del VU
 // ──────────────────────────────────────────────
-export default function () {
+export default function vuMain() {
   const plate         = generateUniquePlate();
   const vehicleTypeId = VEHICLE_TYPE_IDS.SEDAN;
-  const ruleName      = `AsyncRule-VU${__VU}-IT${__ITER}`;
+  const ruleName      = generateRuleName('AsyncRule');
 
   log(`[async-delay] Iniciando medición — placa: ${plate}`);
 
@@ -153,7 +154,7 @@ export default function () {
   // ── SETUP: Asociar regla al tipo de vehículo ───────────────────
   const assocPayload = JSON.stringify(buildVehicleTypeAssociationPayload(vehicleTypeId));
   const assocRes     = http.post(RULES_ENDPOINTS.ruleVehicleTypes(ruleId), assocPayload, JSON_HEADERS);
-  checkStatusAndDuration(assocRes, 200, 5000, '[setup] POST /api/maintenance-rules/{id}/vehicle-types');
+  checkStatusAndDuration(assocRes, 201, 5000, '[setup] POST /api/maintenance-rules/{id}/vehicle-types');
 
   // Pequeña pausa para asegurar que el setup está persistido
   sleep(0.3);
@@ -169,7 +170,7 @@ export default function () {
   const mileagePayload = JSON.stringify(buildMileagePayload(5000));
   const mileageRes     = http.post(FLEET_ENDPOINTS.mileage(plate), mileagePayload, JSON_HEADERS);
 
-  if (!checkStatusAndDuration(mileageRes, 200, 5000, '[measure] POST /api/vehicles/{plate}/mileage')) {
+  if (!checkStatusAndDuration(mileageRes, 201, 5000, '[measure] POST /api/vehicles/{plate}/mileage')) {
     log(`Medición fallida — mileage request falló: ${mileageRes.status}`, 'error');
     alertFound.add(false);
     return;
@@ -190,9 +191,6 @@ export default function () {
 
   while (Date.now() - t0 < maxWaitMs) {
     attempts++;
-
-    // Calcular el elapsed ANTES del GET para mejor precisión
-    const nowBeforeGet = Date.now();
 
     const alertsRes = http.get(RULES_ENDPOINTS.alertsPending, JSON_HEADERS);
 
@@ -271,12 +269,12 @@ export function handleSummary(data) {
   const timeouts       = metrics['alert_timeout_count']?.values?.count           || 0;
   const avgPolls       = metrics['alert_polling_count']?.values?.avg?.toFixed(1) || '?';
   const totalIter      = (metrics['rabbit_mq_delay']?.values?.count || 0) +
-                         parseInt(timeouts, 10);
+                         Number.parseInt(timeouts, 10);
 
   // Evaluación
   const slaOk = (
     (metrics['rabbit_mq_delay']?.values['p(95)'] || 99999) < 5000 &&
-    (metrics['alert_found']?.values?.rate || 0) > 0.90
+    (metrics['alert_found']?.values?.rate || 0) > 0.9
   );
 
   console.log('\n' + '═'.repeat(65));
@@ -302,9 +300,9 @@ export function handleSummary(data) {
   console.log(`     Polls promedio:  ${avgPolls} intentos por medición`);
   console.log('');
   console.log('  🐰 Interpretación:');
-  if (delayP50 !== 'N/A' && parseInt(delayP50) < 2000) {
+  if (delayP50 !== 'N/A' && Number.parseInt(delayP50) < 2000) {
     console.log('     ✅ RabbitMQ procesando mensajes rápidamente');
-  } else if (delayP50 !== 'N/A' && parseInt(delayP50) < 5000) {
+  } else if (delayP50 !== 'N/A' && Number.parseInt(delayP50) < 5000) {
     console.log('     ⚠️  RabbitMQ dentro de rango, pero revisar si hay backpressure');
   } else {
     console.log('     ❌ RabbitMQ con alta latencia — revisar consumers y queues');

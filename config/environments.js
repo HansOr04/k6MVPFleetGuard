@@ -12,8 +12,8 @@
 // ──────────────────────────────────────────────
 // URLs base de los microservicios
 // ──────────────────────────────────────────────
-export const FLEET_BASE_URL = __ENV.FLEET_URL || 'http://localhost:8081';
-export const RULES_BASE_URL = __ENV.RULES_URL || 'http://localhost:8093';
+export const FLEET_BASE_URL = __ENV.FLEET_URL || 'http://localhost:8082';
+export const RULES_BASE_URL = __ENV.RULES_URL || 'http://localhost:8083';
 
 // ──────────────────────────────────────────────
 // Endpoints fleet-service

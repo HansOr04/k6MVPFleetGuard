@@ -18,6 +18,7 @@ import { sleep } from 'k6';
 import { FLEET_ENDPOINTS, RULES_ENDPOINTS, TIMEOUTS } from '../config/environments.js';
 import {
   generatePlate,
+  generateRuleName,
   sedanTypeId,
   buildVehiclePayload,
   buildMileagePayload,
@@ -64,7 +65,7 @@ export function runFleetGuardFlow(opts = {}) {
 
   const plate         = generatePlate();
   const vehicleTypeId = sedanTypeId();
-  const ruleName      = `Rule-VU${__VU}-IT${__ITER}`;
+  const ruleName      = generateRuleName('Rule');
 
   log(`Iniciando flujo — placa: ${plate}`);
 
@@ -103,7 +104,7 @@ export function runFleetGuardFlow(opts = {}) {
   const assocPayload = JSON.stringify(buildVehicleTypeAssociationPayload(vehicleTypeId));
   const assocRes     = http.post(RULES_ENDPOINTS.ruleVehicleTypes(ruleId), assocPayload, JSON_HEADERS);
 
-  checkStatusAndDuration(assocRes, 200, 3000, 'POST /api/maintenance-rules/{id}/vehicle-types');
+  checkStatusAndDuration(assocRes, 201, 3000, 'POST /api/maintenance-rules/{id}/vehicle-types');
 
   sleep(sleepBetweenSteps);
 
@@ -111,7 +112,7 @@ export function runFleetGuardFlow(opts = {}) {
   const mileagePayload = JSON.stringify(buildMileagePayload(mileage));
   const mileageRes     = http.post(FLEET_ENDPOINTS.mileage(plate), mileagePayload, JSON_HEADERS);
 
-  const mileageOk = checkStatusAndDuration(mileageRes, 200, 3000, 'POST /api/vehicles/{plate}/mileage');
+  const mileageOk = checkStatusAndDuration(mileageRes, 201, 3000, 'POST /api/vehicles/{plate}/mileage');
   if (!mileageOk) {
     log(`Fallo al registrar mileage para ${plate}: ${mileageRes.status}`, 'error');
     return { plate, success: false, step: 'register_mileage' };
@@ -164,10 +165,10 @@ export function runSmokeFlow() {
   // POST mileage
   const mileagePayload = JSON.stringify(buildMileagePayload(100));
   const mileageRes     = http.post(FLEET_ENDPOINTS.mileage(plate), mileagePayload, JSON_HEADERS);
-  checkStatusAndDuration(mileageRes, 200, 3000, '[SMOKE] POST /api/vehicles/{plate}/mileage');
+  checkStatusAndDuration(mileageRes, 201, 3000, '[SMOKE] POST /api/vehicles/{plate}/mileage');
 
   // POST maintenance rule
-  const rulePayload = JSON.stringify(buildMaintenanceRulePayload(`Smoke-Rule-VU${__VU}`, 50000));
+  const rulePayload = JSON.stringify(buildMaintenanceRulePayload(generateRuleName('Smoke'), 50000));
   const ruleRes     = http.post(RULES_ENDPOINTS.maintenanceRules, rulePayload, JSON_HEADERS);
   checkStatusAndDuration(ruleRes, 201, 3000, '[SMOKE] POST /api/maintenance-rules');
 
