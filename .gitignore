@@ -1,0 +1,18 @@
+node_modules/
+results/*.json
+results/*.html
+results/*.csv
+!results/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log

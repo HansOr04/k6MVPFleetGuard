@@ -1,0 +1,32 @@
+{
+  "name": "fleetguard-k6-performance",
+  "version": "1.0.0",
+  "description": "Pruebas de rendimiento con k6 para FleetGuard MVP — smoke, load, stress, spike y async RabbitMQ delay",
+  "scripts": {
+    "smoke": "k6 run tests/smoke.test.js",
+    "load": "k6 run tests/load.test.js --out json=results/load.json",
+    "stress": "k6 run tests/stress.test.js --out json=results/stress.json",
+    "spike": "k6 run tests/spike.test.js --out json=results/spike.json",
+    "async-delay": "k6 run tests/async-delay.test.js --out json=results/async-delay.json",
+    "all": "npm run smoke && npm run load && npm run stress && npm run spike && npm run async-delay",
+    "smoke:verbose": "k6 run --http-debug=full tests/smoke.test.js",
+    "load:summary": "k6 run tests/load.test.js --summary-export=results/load-summary.json",
+    "stress:summary": "k6 run tests/stress.test.js --summary-export=results/stress-summary.json",
+    "spike:summary": "k6 run tests/spike.test.js --summary-export=results/spike-summary.json",
+    "async-delay:summary": "k6 run tests/async-delay.test.js --summary-export=results/async-delay-summary.json"
+  },
+  "keywords": [
+    "k6",
+    "performance",
+    "load-testing",
+    "fleetguard",
+    "rabbitmq",
+    "microservices"
+  ],
+  "author": "FleetGuard Team",
+  "license": "MIT",
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
