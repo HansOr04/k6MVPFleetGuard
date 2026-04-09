@@ -116,136 +116,163 @@ const JSON_HEADERS = {
 // ──────────────────────────────────────────────
 // Función principal del VU
 // ──────────────────────────────────────────────
-export default function vuMain() {
-  const plate         = generateUniquePlate();
-  const vehicleTypeId = VEHICLE_TYPE_IDS.SEDAN;
-  const ruleName      = generateRuleName('AsyncRule');
+// Polling helper — busca la alerta por vehicleId en la lista global
+// ──────────────────────────────────────────────
 
-  log(`[async-delay] Iniciando medición — placa: ${plate}`);
+/**
+ * Espera a que aparezca una alerta para el vehicleId dado.
+ * @param {string} vehicleId
+ * @param {number} t0 - timestamp de inicio (antes del POST mileage)
+ * @returns {{ found: boolean, delayMs: number, attempts: number }}
+ */
+function pollForAlert(vehicleId, t0) {
+  const maxWaitMs      = TIMEOUTS.asyncAlertMaxWaitMs;
+  const pollingSeconds = TIMEOUTS.asyncPollingIntervalMs / 1000;
 
-  // ── SETUP: Registrar vehículo ──────────────────────────────────
-  const vehiclePayload = JSON.stringify(buildVehiclePayload(plate, vehicleTypeId));
-  const vehicleRes     = http.post(FLEET_ENDPOINTS.vehicles, vehiclePayload, JSON_HEADERS);
-
-  if (!checkStatusAndDuration(vehicleRes, 201, 5000, '[setup] POST /api/vehicles')) {
-    log(`Setup fallido — no se pudo registrar vehículo: ${vehicleRes.status}`, 'error');
-    alertFound.add(false);
-    return;
-  }
-
-  // ── SETUP: Crear regla de mantenimiento (umbral: 1000 km) ──────
-  const rulePayload = JSON.stringify(buildMaintenanceRulePayload(ruleName, 1000));
-  const ruleRes     = http.post(RULES_ENDPOINTS.maintenanceRules, rulePayload, JSON_HEADERS);
-
-  if (!checkStatusAndDuration(ruleRes, 201, 5000, '[setup] POST /api/maintenance-rules')) {
-    log(`Setup fallido — no se pudo crear regla: ${ruleRes.status}`, 'error');
-    alertFound.add(false);
-    return;
-  }
-
-  const ruleBody = parseJsonSafe(ruleRes);
-  const ruleId   = ruleBody?.id;
-  if (!ruleId) {
-    log(`Setup fallido — no se obtuvo ruleId del response: ${ruleRes.body}`, 'error');
-    alertFound.add(false);
-    return;
-  }
-
-  // ── SETUP: Asociar regla al tipo de vehículo ───────────────────
-  const assocPayload = JSON.stringify(buildVehicleTypeAssociationPayload(vehicleTypeId));
-  const assocRes     = http.post(RULES_ENDPOINTS.ruleVehicleTypes(ruleId), assocPayload, JSON_HEADERS);
-  checkStatusAndDuration(assocRes, 201, 5000, '[setup] POST /api/maintenance-rules/{id}/vehicle-types');
-
-  // Pequeña pausa para asegurar que el setup está persistido
-  sleep(0.3);
-
-  // ─────────────────────────────────────────────────────────────────
-  // ⭐ MEDICIÓN DEL DELAY RABBITMQ
-  // ─────────────────────────────────────────────────────────────────
-
-  // t0: Capturar timestamp ANTES del POST /mileage
-  const t0 = Date.now();
-
-  // POST /mileage — 5000 km supera el umbral de 1000 km → MileageRegistered event
-  const mileagePayload = JSON.stringify(buildMileagePayload(5000));
-  const mileageRes     = http.post(FLEET_ENDPOINTS.mileage(plate), mileagePayload, JSON_HEADERS);
-
-  if (!checkStatusAndDuration(mileageRes, 201, 5000, '[measure] POST /api/vehicles/{plate}/mileage')) {
-    log(`Medición fallida — mileage request falló: ${mileageRes.status}`, 'error');
-    alertFound.add(false);
-    return;
-  }
-
-  // t1: El evento MileageRegistered fue publicado (confirmación HTTP recibida)
-  const t1 = Date.now();
-  log(`[async-delay] Evento publicado en ${t1 - t0}ms — iniciando polling de alerta`);
-
-  // ── POLLING: Esperar a que aparezca la alerta ──────────────────
-  const maxWaitMs      = TIMEOUTS.asyncAlertMaxWaitMs;  // 15 segundos máximo
-  const pollingMs      = TIMEOUTS.asyncPollingIntervalMs; // cada 500ms
-  const pollingSeconds = pollingMs / 1000;
-
-  let alertDelayMs = -1;
-  let attempts     = 0;
-  let found        = false;
+  let attempts = 0;
 
   while (Date.now() - t0 < maxWaitMs) {
     attempts++;
 
     const alertsRes = http.get(RULES_ENDPOINTS.alertsPending, JSON_HEADERS);
-
-    // Verificar que el endpoint responde
     check(alertsRes, {
       '[poll] GET /api/alerts responde 200': (r) => r.status === 200,
     });
 
     if (alertsRes.status === 200) {
-      const alertsBody = parseJsonSafe(alertsRes);
-      // El body puede ser un array o un objeto con content/data
-      const alerts = Array.isArray(alertsBody)
-        ? alertsBody
-        : alertsBody?.content || alertsBody?.data || [];
+      const body   = parseJsonSafe(alertsRes);
+      const alerts = Array.isArray(body) ? body : body?.content || body?.data || [];
+      const hit    = alerts.find((a) => a.vehicleId === vehicleId);
 
-      // Buscar una alerta que corresponda a nuestra placa
-      const ourAlert = alerts.find(
-        (a) => a.plate === plate || a.vehiclePlate === plate
-      );
-
-      if (ourAlert) {
-        // ✅ Alerta encontrada — calcular delay
-        alertDelayMs = Date.now() - t0;
-        found        = true;
-
-        log(`[async-delay] ✅ Alerta encontrada! Delay: ${alertDelayMs}ms | Intento #${attempts} | Alerta ID: ${ourAlert.id || 'N/A'}`);
-        break;
+      if (hit) {
+        return { found: true, delayMs: Date.now() - t0, attempts };
       }
     }
 
-    // No encontrada aún — esperar antes del próximo intento
     sleep(pollingSeconds);
   }
 
-  // ── Registrar resultados en métricas ──────────────────────────
-  if (found) {
-    rabbitMqDelay.add(alertDelayMs);
-    alertFound.add(true);
-    pollingAttempts.add(attempts);
+  return { found: false, delayMs: -1, attempts };
+}
 
-    // Check de negocio: el delay debe estar dentro del rango esperado
-    check({ delay: alertDelayMs }, {
+// ──────────────────────────────────────────────
+// Función principal del VU
+// ──────────────────────────────────────────────
+export default function vuMain() {
+  const plate         = generateUniquePlate();
+  const vehicleTypeId = VEHICLE_TYPE_IDS.SEDAN;
+
+  log(`[async-delay] Iniciando medición — placa: ${plate}`);
+
+  // ── SETUP: Crear regla de mantenimiento ────────────────────────
+  // intervalKm=5000, warningThresholdKm=500 (10%) → PENDING cuando kmRemaining ≤ 500
+  const ruleName = generateRuleName('AsyncDelay');
+  const ruleRes  = http.post(
+    RULES_ENDPOINTS.maintenanceRules,
+    JSON.stringify(buildMaintenanceRulePayload(ruleName, 5000)),
+    JSON_HEADERS,
+  );
+  if (!checkStatusAndDuration(ruleRes, 201, 5000, '[setup] POST /api/maintenance-rules')) {
+    log(`Setup fallido — regla: ${ruleRes.status} ${ruleRes.body}`, 'error');
+    alertFound.add(false);
+    return;
+  }
+
+  const ruleId = parseJsonSafe(ruleRes)?.id;
+  if (!ruleId) {
+    log(`Setup fallido — sin ruleId en response: ${ruleRes.body}`, 'error');
+    alertFound.add(false);
+    return;
+  }
+
+  // ── SETUP: Asociar regla al tipo de vehículo ───────────────────
+  const assocRes = http.post(
+    RULES_ENDPOINTS.ruleVehicleTypes(ruleId),
+    JSON.stringify(buildVehicleTypeAssociationPayload(vehicleTypeId)),
+    JSON_HEADERS,
+  );
+  if (!checkStatusAndDuration(assocRes, 201, 5000, '[setup] POST /api/maintenance-rules/{id}/vehicle-types')) {
+    log(`Setup fallido — asociación regla-tipo: ${assocRes.status} ${assocRes.body}`, 'error');
+    alertFound.add(false);
+    return;
+  }
+  log(`[async-delay] Regla creada: ${ruleName} (id: ${ruleId})`);
+
+  // ── SETUP: Registrar vehículo (tipo SEDAN) ─────────────────────
+  const vehicleRes = http.post(
+    FLEET_ENDPOINTS.vehicles,
+    JSON.stringify(buildVehiclePayload(plate, vehicleTypeId)),
+    JSON_HEADERS,
+  );
+  if (!checkStatusAndDuration(vehicleRes, 201, 5000, '[setup] POST /api/vehicles')) {
+    log(`Setup fallido — vehículo: ${vehicleRes.status}`, 'error');
+    alertFound.add(false);
+    return;
+  }
+
+  const vehicleId = parseJsonSafe(vehicleRes)?.id;
+  if (!vehicleId) {
+    log(`Setup fallido — sin vehicleId en response: ${vehicleRes.body}`, 'error');
+    alertFound.add(false);
+    return;
+  }
+  log(`[async-delay] vehicleId: ${vehicleId}`);
+
+  // ── SETUP: Registro warmup de kilometraje ──────────────────────
+  // El rules-alerts-service solo genera alertas en actualizaciones (UPDATE),
+  // no en el primer registro de un vehículo nuevo (INSERT).
+  const warmupRes = http.post(
+    FLEET_ENDPOINTS.mileage(plate),
+    JSON.stringify(buildMileagePayload(100)),
+    JSON_HEADERS,
+  );
+  if (!checkStatusAndDuration(warmupRes, 201, 5000, '[setup] POST /api/vehicles/{plate}/mileage (warmup)')) {
+    log(`Setup fallido — warmup mileage: ${warmupRes.status}`, 'error');
+    alertFound.add(false);
+    return;
+  }
+  sleep(0.5);
+
+  // ─────────────────────────────────────────────────────────────────
+  // ⭐ MEDICIÓN DEL DELAY RABBITMQ
+  // ─────────────────────────────────────────────────────────────────
+  const t0 = Date.now();
+
+  // 4700 km → kmRemaining = 5000 - 4700 = 300 ≤ warningThresholdKm(500) → zona PENDING
+  const mileageRes = http.post(
+    FLEET_ENDPOINTS.mileage(plate),
+    JSON.stringify(buildMileagePayload(4700)),
+    JSON_HEADERS,
+  );
+  if (!checkStatusAndDuration(mileageRes, 201, 5000, '[measure] POST /api/vehicles/{plate}/mileage')) {
+    log(`Medición fallida — mileage: ${mileageRes.status}`, 'error');
+    alertFound.add(false);
+    return;
+  }
+
+  log(`[async-delay] Evento publicado en ${Date.now() - t0}ms — iniciando polling`);
+
+  // ── POLLING ────────────────────────────────────────────────────
+  const { found, delayMs, attempts } = pollForAlert(vehicleId, t0);
+
+  // ── Registrar resultados en métricas ──────────────────────────
+  pollingAttempts.add(attempts);
+
+  if (found) {
+    rabbitMqDelay.add(delayMs);
+    alertFound.add(true);
+    log(`[async-delay] ✅ Alerta encontrada! Delay: ${delayMs}ms | Intento #${attempts}`);
+    check({ delay: delayMs }, {
       'rabbit_mq_delay < 10000ms': (d) => d.delay < 10000,
       'rabbit_mq_delay < 5000ms':  (d) => d.delay < 5000,
       'rabbit_mq_delay < 3000ms':  (d) => d.delay < 3000,
     });
   } else {
-    // ❌ Timeout — la alerta no apareció en el tiempo máximo
     alertFound.add(false);
     alertTimeouts.add(1);
-    pollingAttempts.add(attempts);
-    log(`[async-delay] ❌ TIMEOUT — alerta no encontrada para ${plate} en ${maxWaitMs}ms (${attempts} intentos)`, 'warn');
+    log(`[async-delay] ❌ TIMEOUT — vehicleId: ${vehicleId} (${plate}) en ${TIMEOUTS.asyncAlertMaxWaitMs}ms (${attempts} intentos)`, 'warn');
   }
 
-  // Pausa entre iteraciones
   sleep(1);
 }
 
