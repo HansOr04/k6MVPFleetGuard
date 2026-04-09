@@ -75,6 +75,9 @@ const pollingAttempts = new Trend('alert_polling_count');
 /** Counter: Cuántas veces no apareció la alerta (timeout expirado) */
 const alertTimeouts = new Counter('alert_timeout_count');
 
+/** Trend: Duración del POST /mileage hasta confirmación HTTP (publicación del evento) */
+const mileagePostDuration = new Trend('mileage_post_duration', true);
+
 // ──────────────────────────────────────────────
 // Configuración del test
 // ──────────────────────────────────────────────
