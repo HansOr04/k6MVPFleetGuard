@@ -283,20 +283,24 @@ export function handleSummary(data) {
   const metrics = data.metrics;
 
   // Delay RabbitMQ
-  const delayAvg = metrics['rabbit_mq_delay']?.values?.avg?.toFixed(0)         || 'N/A';
-  const delayP50 = metrics['rabbit_mq_delay']?.values['p(50)']?.toFixed(0)     || 'N/A';
-  const delayP90 = metrics['rabbit_mq_delay']?.values['p(90)']?.toFixed(0)     || 'N/A';
-  const delayP95 = metrics['rabbit_mq_delay']?.values['p(95)']?.toFixed(0)     || 'N/A';
-  const delayP99 = metrics['rabbit_mq_delay']?.values['p(99)']?.toFixed(0)     || 'N/A';
-  const delayMax = metrics['rabbit_mq_delay']?.values?.max?.toFixed(0)         || 'N/A';
-  const delayMin = metrics['rabbit_mq_delay']?.values?.min?.toFixed(0)         || 'N/A';
+  // Native histogram Trends usan 'med' para la mediana en lugar de 'p(50)'
+  const delayVals = metrics['rabbit_mq_delay']?.values || {};
+  const delayAvg  = delayVals.avg?.toFixed(0)                                  || 'N/A';
+  const delayP50  = (delayVals['p(50)'] ?? delayVals.med)?.toFixed(0)          || 'N/A';
+  const delayP90  = delayVals['p(90)']?.toFixed(0)                             || 'N/A';
+  const delayP95  = delayVals['p(95)']?.toFixed(0)                             || 'N/A';
+  const delayP99  = delayVals['p(99)']?.toFixed(0)                             || 'N/A';
+  const delayMax  = delayVals.max?.toFixed(0)                                  || 'N/A';
+  const delayMin  = delayVals.min?.toFixed(0)                                  || 'N/A';
 
   // Alertas encontradas
   const foundRate      = ((metrics['alert_found']?.values?.rate || 0) * 100).toFixed(1);
   const timeouts       = metrics['alert_timeout_count']?.values?.count           || 0;
   const avgPolls       = metrics['alert_polling_count']?.values?.avg?.toFixed(1) || '?';
-  const totalIter      = (metrics['rabbit_mq_delay']?.values?.count || 0) +
-                         Number.parseInt(timeouts, 10);
+  // Rate metric expone passes + fails = total iteraciones
+  const alertPasses    = metrics['alert_found']?.values?.passes || 0;
+  const alertFails     = metrics['alert_found']?.values?.fails  || 0;
+  const totalIter      = alertPasses + alertFails;
 
   // Evaluación
   const slaOk = (
