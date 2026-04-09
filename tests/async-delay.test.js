@@ -247,16 +247,22 @@ export default function vuMain() {
     JSON.stringify(buildMileagePayload(4700)),
     JSON_HEADERS,
   );
+
+  // t1: el evento ya fue publicado en RabbitMQ (fleet-service confirmó el registro)
+  const t1 = Date.now();
+  mileagePostDuration.add(t1 - t0);
+
   if (!checkStatusAndDuration(mileageRes, 201, 5000, '[measure] POST /api/vehicles/{plate}/mileage')) {
     log(`Medición fallida — mileage: ${mileageRes.status}`, 'error');
     alertFound.add(false);
     return;
   }
 
-  log(`[async-delay] Evento publicado en ${Date.now() - t0}ms — iniciando polling`);
+  log(`[async-delay] Evento publicado en ${t1 - t0}ms (POST duration) — iniciando polling`);
 
   // ── POLLING ────────────────────────────────────────────────────
-  const { found, delayMs, attempts } = pollForAlert(vehicleId, t0);
+  // t1 como referencia: mide solo el tiempo RabbitMQ (consume + evaluación + persistencia)
+  const { found, delayMs, attempts } = pollForAlert(vehicleId, t1);
 
   // ── Registrar resultados en métricas ──────────────────────────
   pollingAttempts.add(attempts);
@@ -284,6 +290,11 @@ export default function vuMain() {
 // ──────────────────────────────────────────────
 export function handleSummary(data) {
   const metrics = data.metrics;
+
+  // Duración del POST /mileage (tiempo hasta que el evento fue publicado)
+  const postVals    = metrics['mileage_post_duration']?.values || {};
+  const postAvg     = postVals.avg?.toFixed(0) || 'N/A';
+  const postP95     = postVals['p(95)']?.toFixed(0) || 'N/A';
 
   // Delay RabbitMQ
   // Native histogram Trends usan 'med' para la mediana en lugar de 'p(50)'
@@ -326,6 +337,10 @@ export function handleSummary(data) {
   console.log(`     p95:  ${delayP95}ms  ← SLA objetivo: < 5000ms`);
   console.log(`     p99:  ${delayP99}ms`);
   console.log(`     max:  ${delayMax}ms`);
+  console.log('');
+  console.log('  🚀 POST /mileage (publicación del evento):');
+  console.log(`     avg:  ${postAvg}ms`);
+  console.log(`     p95:  ${postP95}ms`);
   console.log('');
   console.log('  📈 Estadísticas de polling:');
   console.log(`     Mediciones:      ${totalIter} total`);
