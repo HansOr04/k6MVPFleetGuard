@@ -33,6 +33,7 @@ export const RULES_ENDPOINTS = {
   maintenance:              (plate)  => `${RULES_BASE_URL}/api/maintenance/${plate}`,
   alerts:                   `${RULES_BASE_URL}/api/alerts`,
   alertsPending:            `${RULES_BASE_URL}/api/alerts?status=PENDING`,
+  alertsByVehicle:          (plate) => `${RULES_BASE_URL}/api/alerts/vehicle/${plate}`,
 };
 
 // ──────────────────────────────────────────────

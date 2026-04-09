@@ -128,26 +128,33 @@ const JSON_HEADERS = {
  * @param {number} t0 - timestamp de inicio (antes del POST mileage)
  * @returns {{ found: boolean, delayMs: number, attempts: number }}
  */
-function pollForAlert(vehicleId, t0) {
+/**
+ * Espera a que aparezca una alerta activa para el vehículo dado.
+ * Usa GET /api/alerts/vehicle/{plate} — endpoint específico por vehículo, rápido.
+ * @param {string} plate
+ * @param {number} t0 - timestamp de referencia (después del POST mileage)
+ * @returns {{ found: boolean, delayMs: number, attempts: number }}
+ */
+function pollForAlert(plate, t0) {
   const maxWaitMs      = TIMEOUTS.asyncAlertMaxWaitMs;
   const pollingSeconds = TIMEOUTS.asyncPollingIntervalMs / 1000;
+  const alertsUrl      = RULES_ENDPOINTS.alertsByVehicle(plate);
 
   let attempts = 0;
 
   while (Date.now() - t0 < maxWaitMs) {
     attempts++;
 
-    const alertsRes = http.get(RULES_ENDPOINTS.alertsPending, JSON_HEADERS);
+    const alertsRes = http.get(alertsUrl, JSON_HEADERS);
     check(alertsRes, {
-      '[poll] GET /api/alerts responde 200': (r) => r.status === 200,
+      '[poll] GET /api/alerts/vehicle/{plate} responde 200': (r) => r.status === 200,
     });
 
     if (alertsRes.status === 200) {
       const body   = parseJsonSafe(alertsRes);
       const alerts = Array.isArray(body) ? body : body?.content || body?.data || [];
-      const hit    = alerts.find((a) => a.vehicleId === vehicleId);
 
-      if (hit) {
+      if (alerts.length > 0) {
         return { found: true, delayMs: Date.now() - t0, attempts };
       }
     }
@@ -262,7 +269,7 @@ export default function vuMain() {
 
   // ── POLLING ────────────────────────────────────────────────────
   // t1 como referencia: mide solo el tiempo RabbitMQ (consume + evaluación + persistencia)
-  const { found, delayMs, attempts } = pollForAlert(vehicleId, t1);
+  const { found, delayMs, attempts } = pollForAlert(plate, t1);
 
   // ── Registrar resultados en métricas ──────────────────────────
   pollingAttempts.add(attempts);
